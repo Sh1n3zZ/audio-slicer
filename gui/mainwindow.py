@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
 
         class WorkThread(QThread):
             oneFinished = Signal()
+            errorOccurred = Signal(str, str)
 
             def __init__(self, filenames: List[str], window: MainWindow):
                 super().__init__()
@@ -126,39 +127,51 @@ class MainWindow(QMainWindow):
 
             def run(self):
                 for filename in self.filenames:
-                    audio, sr = soundfile.read(filename, dtype=np.float32)
-                    is_mono = True
-                    if len(audio.shape) > 1:
-                        is_mono = False
-                        audio = audio.T
-                    slicer = Slicer(
-                        sr=sr,
-                        threshold=float(self.win.ui.lineEditThreshold.text()),
-                        min_length=int(self.win.ui.lineEditMinLen.text()),
-                        min_interval=int(
-                            self.win.ui.lineEditMinInterval.text()),
-                        hop_size=int(self.win.ui.lineEditHopSize.text()),
-                        max_sil_kept=int(self.win.ui.lineEditMaxSilence.text())
-                    )
-                    chunks = slicer.slice(audio)
-                    out_dir = self.win.ui.lineEditOutputDir.text()
-                    if out_dir == '':
-                        out_dir = os.path.dirname(os.path.abspath(filename))
-                    else:
-                        # Make dir if not exists
-                        info = QDir(out_dir)
-                        if not info.exists():
-                            info.mkpath(out_dir)
-
-                    ext = self.win.ui.buttonGroup.checkedButton().text()
-                    for i, chunk in enumerate(chunks):
-                        path = os.path.join(out_dir, f'%s_%d.{ext}' % (os.path.basename(filename)
-                                                                       .rsplit('.', maxsplit=1)[0], i))
-                        if not is_mono:
-                            chunk = chunk.T
-                        soundfile.write(path, chunk, sr)
-
-                    self.oneFinished.emit()
+                    try:
+                        print(f"Processing file: {filename}")
+                        
+                        audio, sr = soundfile.read(filename, dtype=np.float32)
+                        is_mono = True
+                        if len(audio.shape) > 1:
+                            is_mono = False
+                            audio = audio.T
+                        
+                        slicer = Slicer(
+                            sr=sr,
+                            threshold=float(self.win.ui.lineEditThreshold.text()),
+                            min_length=int(self.win.ui.lineEditMinLen.text()),
+                            min_interval=int(self.win.ui.lineEditMinInterval.text()),
+                            hop_size=int(self.win.ui.lineEditHopSize.text()),
+                            max_sil_kept=int(self.win.ui.lineEditMaxSilence.text())
+                        )
+                        
+                        chunks = slicer.slice(audio)
+                        out_dir = self.win.ui.lineEditOutputDir.text()
+                        if out_dir == '':
+                            out_dir = os.path.dirname(os.path.abspath(filename))
+                        else:
+                            # Make dir if not exists
+                            info = QDir(out_dir)
+                            if not info.exists():
+                                info.mkpath(out_dir)
+                        
+                        print(f"Saving chunks to directory: {out_dir}")
+                        
+                        ext = self.win.ui.buttonGroup.checkedButton().text()
+                        for i, chunk in enumerate(chunks):
+                            out_path = os.path.join(out_dir, f'%s_%d.{ext}' % (
+                                os.path.basename(filename).rsplit('.', maxsplit=1)[0], i))
+                            if not is_mono:
+                                chunk = chunk.T
+                            soundfile.write(out_path, chunk, sr)
+                            print(f"Saved chunk to: {out_path}")
+                        
+                        self.oneFinished.emit()
+                        
+                    except Exception as e:
+                        error_msg = f"Error processing {filename}: {str(e)}"
+                        print(error_msg)
+                        self.errorOccurred.emit(filename, error_msg)
 
         # Collect paths
         paths: list[str] = []
@@ -178,6 +191,7 @@ class MainWindow(QMainWindow):
         worker = WorkThread(paths, self)
         worker.oneFinished.connect(self._q_oneFinished)
         worker.finished.connect(self._q_threadFinished)
+        worker.errorOccurred.connect(self._q_handleError)
         worker.start()
 
         self.workers.append(worker)  # Collect in case of auto deletion
@@ -252,3 +266,8 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole + 1,
                          path)
             self.ui.listWidgetTaskList.addItem(item)
+
+    def _q_handleError(self, filename: str, error_msg: str):
+        """处理处理过程中的错误"""
+        QMessageBox.critical(self, "Error",
+                           f"Error processing {filename}\n\n{error_msg}")
